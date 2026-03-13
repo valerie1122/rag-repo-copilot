@@ -1,0 +1,40 @@
+# ============================================================
+# .dockerignore: Files that Docker should NOT copy into the container
+# ============================================================
+# Same idea as .gitignore, but for Docker.
+# These files are either:
+# - Not needed in the container (tests, docs)
+# - Should not be in the container (secrets, cached data)
+# - Too large (repos, vector data — we use volumes instead)
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+
+# Data directories (these use Docker volumes instead)
+repos/
+chroma_data/
+
+# Environment files (secrets!)
+.env
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in production)
+*.md
+*.docx
+PROJECT_GUIDE.*

@@ -1,0 +1,56 @@
+# ============================================================
+# Docker Compose: Run the entire app with one command
+# ============================================================
+#
+# What is Docker Compose?
+# - Dockerfile defines HOW to build one container
+# - Docker Compose defines HOW to RUN one or more containers together
+# - It handles environment variables, ports, volumes, etc.
+#
+# Usage:
+#   docker compose up --build     # Build and start
+#   docker compose down           # Stop and remove
+#   docker compose logs -f        # View logs in real time
+#
+# ============================================================
+
+services:
+  # Our main (and only) service: the RAG API
+  api:
+    # Build from the Dockerfile in the current directory
+    build: .
+
+    # Map port 8000 inside the container to port 8000 on your machine
+    # So you can visit http://localhost:8000/docs in your browser
+    ports:
+      - "8000:8000"
+
+    # Environment variables
+    # The app reads OPENAI_API_KEY from the environment
+    # ${OPENAI_API_KEY} reads from your .env file or system environment
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+    # Volumes: persist data between container restarts
+    # Without volumes, data is lost when the container stops
+    # - chroma_data: vector database (so you don't re-embed every time)
+    # - repos: cloned repositories
+    volumes:
+      - chroma_data:/app/chroma_data
+      - repos:/app/repos
+
+    # Restart policy: if the app crashes, restart it automatically
+    restart: unless-stopped
+
+    # Health check: Docker periodically checks if the app is alive
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Named volumes: Docker manages the storage location
+volumes:
+  chroma_data:
+  repos:
