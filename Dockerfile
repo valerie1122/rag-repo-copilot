@@ -33,6 +33,9 @@ RUN apt-get update && \
 # All our code will live in /app inside the container
 WORKDIR /app
 
+# Tell Python where to find our modules
+ENV PYTHONPATH=/app
+
 # ---- Stage 4: Install Python dependencies ----
 # We copy requirements.txt FIRST (before the rest of the code)
 # Why? Docker caches each step. If requirements.txt hasn't changed,
