@@ -27,7 +27,7 @@ app = FastAPI(
     description="A code repository Q&A system powered by RAG. "
                 "Submit any GitHub repo and ask questions about the code. "
                 "Uses hybrid search (semantic + BM25) with LLM reranking.",
-    version="0.8.0",
+    version="1.0.0",
 )
 
 app.add_middleware(
