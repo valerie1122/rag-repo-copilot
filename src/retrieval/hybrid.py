@@ -20,7 +20,9 @@ How do we combine them?
 import re
 from rank_bm25 import BM25Okapi
 
-from src.embedding.store import search as vector_search
+# Lazy-import vector_search inside hybrid_search() so this module can be used
+# (BM25 + RRF) without requiring ChromaDB to be installed — useful for the eval
+# script and unit tests, which substitute their own dense retriever.
 from src.config import TOP_K
 
 
@@ -195,6 +197,9 @@ def hybrid_search(query: str, top_k: int = TOP_K) -> list[dict]:
     """
     # Get more results from each search to have a better pool for fusion
     fetch_k = top_k * 2
+
+    # Lazy import — only required when actually using ChromaDB-backed vector search
+    from src.embedding.store import search as vector_search
 
     # Run both searches
     vector_results = vector_search(query, top_k=fetch_k)

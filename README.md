@@ -1,218 +1,134 @@
 # RAG Repo Copilot
 
-A **Retrieval-Augmented Generation** system for code repositories. Submit any GitHub repo URL and ask natural language questions — get accurate answers with specific code references.
+> Ask any GitHub repo a natural-language question and get a cited code answer. Hybrid retrieval (semantic + BM25 + RRF) feeds an LLM reranker before answer generation.
 
-Built with a **three-stage retrieval pipeline**: hybrid search (semantic + BM25), LLM reranking, and GPT-4o answer generation.
+![architecture](docs/architecture.svg)
 
-## Features
+## What it does
 
-- **AST-based code chunking** — intelligently splits code by functions, classes, and methods (not arbitrary line breaks)
-- **Hybrid search** — combines semantic understanding (OpenAI embeddings) with keyword matching (BM25) using Reciprocal Rank Fusion
-- **LLM reranking** — GPT re-scores search results for higher relevance accuracy
-- **RESTful API** — FastAPI with auto-generated Swagger docs
-- **Docker-ready** — one-command deployment with `docker compose up`
+Point it at a repo URL → it clones, chunks the source by AST (functions/classes, never mid-function), embeds with OpenAI, and indexes both into ChromaDB and an in-memory BM25. At query time it runs **dense + BM25 in parallel**, fuses with **Reciprocal Rank Fusion**, then **reranks the top candidates with GPT-4o** before sending the survivors to the answer model. Answers come back with file path + function name citations so you can jump straight to the source.
 
-## Architecture
+The retrieval pipeline is the interesting part — see the **Evaluation** section below for the ablation that quantifies what each stage contributes.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                    RAG Repo Copilot                       │
-├──────────────────────────────────────────────────────────┤
-│                                                          │
-│  POST /repos (Ingestion Pipeline)                        │
-│  ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌───────┐ │
-│  │  Clone   │ → │  AST     │ → │  OpenAI  │ → │ Chroma│ │
-│  │  Repo    │   │  Chunker │   │  Embed   │   │  + BM25│ │
-│  └─────────┘   └──────────┘   └──────────┘   └───────┘ │
-│                                                          │
-│  POST /ask (Query Pipeline)                              │
-│  ┌──────────────┐   ┌──────────┐   ┌─────────────────┐  │
-│  │ Hybrid Search │ → │ Reranker │ → │ GPT-4o Answer   │  │
-│  │ Vector + BM25 │   │ (GPT)    │   │ + Code Refs     │  │
-│  └──────────────┘   └──────────┘   └─────────────────┘  │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-## Quick Start
-
-### Option 1: Local Development
+## Quick start
 
 ```bash
-# Clone the repo
 git clone https://github.com/valerie1122/rag-repo-copilot.git
 cd rag-repo-copilot
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env and add your OpenAI API key
-
-# Run the server
-uvicorn src.api.main:app --reload
-
-# Visit http://localhost:8000/docs for Swagger UI
+cp .env.example .env   # then add your OPENAI_API_KEY
+uvicorn src.api.main:app --reload   # http://localhost:8000/docs
 ```
 
-### Option 2: Docker
+Or `docker compose -f docker-compose.local.yml up --build` for a containerised run.
+
+### Use it
 
 ```bash
-# Set your API key
-export OPENAI_API_KEY=your_key_here
+# 1) Ingest a repo
+curl -X POST localhost:8000/repos -H 'content-type: application/json' \
+  -d '{"repo_url": "https://github.com/tiangolo/fastapi"}'
 
-# Build and run
-docker compose up --build
-
-# Visit http://localhost:8000/docs
+# 2) Ask
+curl -X POST localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"question": "How does dependency injection work?"}'
 ```
 
-## Usage
+## Design decisions
 
-### Step 1: Ingest a repository
+### Why AST chunking, not line-splitting?
 
-```bash
-curl -X POST http://localhost:8000/repos \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url": "https://github.com/postmanlabs/httpbin"}'
-```
+Splitting Python by N-line windows cuts functions in half. The model then sees a fragment with no signature, no docstring, and ambiguous indentation. AST chunking keeps every function, method, and class as one chunk — each retrieved chunk is a complete, executable unit with its own context. The cost is a slightly more complex chunker (handle nested classes, async fns, module-level code as a residual chunk); the win is that retrieval surfaces things the model can actually reason about.
 
-Response:
-```json
-{
-  "status": "success",
-  "repo_url": "https://github.com/postmanlabs/httpbin",
-  "files_found": 8,
-  "chunks_created": 174,
-  "chunks_embedded": 174
-}
-```
+### Why hybrid retrieval (semantic + BM25)?
 
-### Step 2: Ask questions
+Semantic search (cosine over embeddings) generalizes — it can match `"check if user is logged in"` to a function called `verify_session_token`. But it gets fooled by paraphrase: ask for `"jsonable_encoder"` by name and a pure-semantic search may rank it below five vaguely similar serializer helpers. BM25 is the inverse: brittle on paraphrase, lethal on exact identifiers. Code questions are bimodal — sometimes you ask "how does this work" (semantic), sometimes you ask "where is `OAuth2PasswordBearer`" (lexical). One retriever can't win both. The ablation table below shows how much each contributes.
 
-```bash
-curl -X POST http://localhost:8000/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "How does the app handle redirect requests?"}'
-```
+### Why RRF fusion (and not weighted sum)?
 
-Response:
-```json
-{
-  "question": "How does the app handle redirect requests?",
-  "answer": "The httpbin app handles redirects by decrementing the redirect count...",
-  "sources": [
-    {
-      "file_path": "httpbin/core.py",
-      "name": "_redirect",
-      "relevance_score": 10
-    }
-  ],
-  "search_method": "hybrid+rerank"
-}
-```
+Cosine distance and BM25 scores live in different scales (and different distributions per query). Weighted sums require per-query normalization that's never quite right. **Reciprocal Rank Fusion** sidesteps the problem entirely: it ignores raw scores and only looks at *positions* in each ranked list, with `score = 1/(k + rank)`. A chunk that shows up in both lists gets both contributions and floats to the top — no tuning needed.
 
-### Search Options
+### Why an LLM reranker?
 
-The `/ask` endpoint supports different search strategies:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `question` | required | Your question about the code |
-| `top_k` | 5 | Number of code chunks to retrieve |
-| `use_hybrid` | true | Use hybrid search (semantic + BM25) |
-| `use_rerank` | true | Use GPT reranking for better accuracy |
-
-## Tech Stack
-
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Web Framework | FastAPI | Async API with auto-docs |
-| LLM | GPT-4o | Answer generation + reranking |
-| Embeddings | text-embedding-3-small | 1536-dim code embeddings |
-| Vector Store | ChromaDB | Cosine similarity search |
-| Keyword Search | BM25 (rank-bm25) | Term-frequency matching |
-| Code Parsing | Python AST | Function/class-level chunking |
-| Containerization | Docker | One-command deployment |
-
-## Project Structure
-
-```
-rag-repo-copilot/
-├── src/
-│   ├── api/
-│   │   └── main.py              # FastAPI endpoints
-│   ├── ingestion/
-│   │   ├── loader.py            # Git clone + file collection
-│   │   └── chunker.py           # AST-based code chunking
-│   ├── embedding/
-│   │   ├── embedder.py          # OpenAI embedding API
-│   │   └── store.py             # ChromaDB vector store
-│   ├── retrieval/
-│   │   ├── prompts.py           # Prompt templates
-│   │   ├── qa_chain.py          # RAG pipeline orchestrator
-│   │   ├── hybrid.py            # BM25 + semantic + RRF fusion
-│   │   └── reranker.py          # LLM-based result reranking
-│   └── config.py                # Configuration
-├── scripts/
-│   └── evaluate.py              # Search quality evaluation
-├── tests/
-│   ├── test_ingestion.py        # Chunker tests
-│   ├── test_embedding.py        # Embedding + storage tests
-│   ├── test_qa.py               # QA pipeline tests
-│   ├── test_hybrid.py           # Hybrid search tests
-│   └── test_reranker.py         # Reranker + full pipeline tests
-├── Dockerfile                   # Container build instructions
-├── docker-compose.yml           # Container orchestration
-├── requirements.txt             # Python dependencies
-└── .env.example                 # Environment variable template
-```
-
-## How It Works
-
-### Ingestion Pipeline (POST /repos)
-
-1. **Clone** — shallow clone (`depth=1`) of the GitHub repo
-2. **Collect** — find all `.py` files, skip `venv/`, `__pycache__/`, etc.
-3. **Chunk** — use Python's AST module to split code into functions, classes, and methods. Each chunk includes metadata (file path, name, line numbers, docstring)
-4. **Embed** — convert each chunk to a 1536-dim vector using OpenAI's `text-embedding-3-small`
-5. **Store** — save vectors to ChromaDB + build BM25 index
-
-### Query Pipeline (POST /ask)
-
-1. **Hybrid Search** — run both semantic search (ChromaDB cosine similarity) and BM25 keyword search in parallel
-2. **RRF Fusion** — combine results using Reciprocal Rank Fusion: `score = 1/(k + rank)`. Chunks found by both methods get the highest scores
-3. **Reranking** — GPT evaluates each candidate's relevance (0-10 score) and re-sorts
-4. **Generation** — top results + question are sent to GPT-4o, which generates an answer with specific code references
+After RRF we have ~10 plausible candidates, but their relative order still reflects the retriever's biases (RRF doesn't read the code). A reranker pass shows GPT-4o the actual chunk content alongside the question and asks for a 0–10 score. It's slower and costs an extra LLM call per query, but the cost is bounded (one fixed-size call) and the precision lift on the top-K is the largest single contributor in the ablation. Pattern: retrieve cheaply and broadly → rerank expensively and precisely.
 
 ## Evaluation
 
-Run the evaluation script to compare search methods:
+### Test set
+
+40 hand-labeled queries against the FastAPI source (`tiangolo/fastapi`, ~46 files indexed → 395 AST chunks). Each query is annotated with 1–3 relevant chunk IDs of the form `{file_path}::{name}`. Queries are split 20/20 between **explicit** (mentions a specific identifier — favours BM25) and **fuzzy** (conceptual question, no exact-match terms — favours semantic). The full set lives in [`eval/queries_fastapi.json`](eval/queries_fastapi.json).
+
+### Metrics
+
+- **Hit Rate@5** — fraction of queries where any relevant chunk appears in the top-5 results.
+- **MRR (Mean Reciprocal Rank)** — `1/rank` of the first relevant result, averaged over all queries (0 if not in top-5).
+
+### Results
+
+<!-- EVAL_TABLE_START -->
+<!-- Auto-generated by scripts/render_readme.py — do not edit by hand -->
+_Test set: 40 hand-labeled queries against `tiangolo/fastapi` (395 chunks). Embeddings: `text-embedding-3-small`._
+
+| System | Hit Rate@5 | MRR | Δ HR | Δ MRR |
+|---|---:|---:|---:|---:|
+| A. Dense only (semantic baseline) | **0.925** | **0.794** | — | — |
+| B. + BM25 + RRF | **0.900** | **0.738** | -0.025 | -0.055 |
+| C. + LLM rerank (full system) | **0.975** | **0.893** | +0.050 | +0.099 |
+
+**Breakdown by query kind** (HR@5 / MRR):
+
+| System | Explicit-name queries | Fuzzy/conceptual queries |
+|---|---|---|
+| A. Dense only (semantic baseline) | 0.900 / 0.850 | 0.950 / 0.738 |
+| B. + BM25 + RRF | 0.900 / 0.779 | 0.900 / 0.698 |
+| C. + LLM rerank (full system) | 1.000 / 0.900 | 0.950 / 0.885 |
+<!-- EVAL_TABLE_END -->
+
+Reproduce with:
 
 ```bash
-python -m scripts.evaluate
+git clone --depth 1 https://github.com/tiangolo/fastapi.git repos/fastapi
+python -m scripts.evaluate \
+  --repo-path repos/fastapi/fastapi \
+  --queries eval/queries_fastapi.json
+python -m scripts.render_readme   # rewrites the table above
 ```
 
-This tests 5 query types across 4 methods (vector-only, BM25-only, hybrid, hybrid+rerank) and reports Hit Rate and MRR (Mean Reciprocal Rank).
+The eval is self-contained: it caches embeddings to `eval/cache_fastapi.npz` so re-runs are ~30s after the first ~3-5 minute indexing pass. Scoring uses exact cosine similarity in numpy rather than Chroma's HNSW — for a 395-chunk corpus the two are equivalent (HNSW only approximates above ~10K vectors), and the standalone eval is reproducible from scratch without any persistent vector-store state.
 
-## Roadmap
+## Tech stack
 
-- [x] Day 1: Environment + project skeleton
-- [x] Day 2: Repo ingestion + AST-based code chunking
-- [x] Day 3: Embedding + vector store (ChromaDB)
-- [x] Day 4: LLM answer generation (GPT-4o)
-- [x] Day 5: FastAPI endpoints + end-to-end integration
-- [x] Day 6: Hybrid search (semantic + BM25 + RRF)
-- [x] Day 7: LLM reranking + evaluation framework
-- [x] Day 8: Docker containerization
-- [x] Day 9: Documentation + architecture diagram
-- [x] Day 10: Final polish + logging + interview preparation
+FastAPI · Streamlit (browser UI) · ChromaDB (vector store) · BM25Okapi (rank-bm25) · OpenAI `text-embedding-3-small` (1536-d) · GPT-4o (rerank + answer) · Python AST module · Docker · Render (deploy).
+
+## Project structure
+
+```
+src/
+  api/         FastAPI endpoints (POST /repos, POST /ask)
+  ingestion/   Git clone + AST chunker
+  embedding/   OpenAI embeddings + Chroma store
+  retrieval/   hybrid (BM25+RRF), reranker, qa_chain
+scripts/
+  evaluate.py        3-mode ablation eval — produces eval/results.json
+  render_readme.py   Renders results.json into the README table
+eval/
+  queries_fastapi.json   40 labeled queries
+  results.json           Eval output (committed so README ↔ data stays consistent)
+  smoke_test.py          Mock-embedder sanity check for the metrics math
+docs/
+  architecture.svg       This README's hero diagram
+tests/                   Unit tests for chunker, embedder, hybrid, reranker
+```
+
+## Limitations & honest caveats
+
+- **Single language.** Chunker only handles Python (uses `ast`). Other languages would need tree-sitter or per-language parsers.
+- **In-memory BM25.** Rebuilt at process start from the chunk store. Fine for one repo per worker; a multi-tenant deployment would need a persistent BM25 (e.g. Tantivy).
+- **One-shot retrieval.** No conversational memory, no query rewriting, no follow-up resolution. A "did you mean X?" loop would help fuzzy queries that miss.
+- **Eval set is mine to label.** 40 queries on one repo is a real signal, not a benchmark. Generalising the numbers requires more repos and ideally inter-annotator agreement.
+- **Reranker cost.** ~$0.001 per query at GPT-4o pricing (~10 chunks × 500 tokens). Cheap individually, but scales linearly with QPS.
 
 ## License
 
-MIT
+MIT.

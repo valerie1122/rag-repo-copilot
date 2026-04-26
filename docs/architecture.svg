@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" role="img">
+  <title>RAG Repo Copilot — retrieval pipeline architecture</title>
+  <desc>Two-phase pipeline: indexing (clone, AST chunk, embed, store) and query (embed query, hybrid retrieve with BM25 + dense + RRF, LLM rerank, generate cited answer).</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <style>
+      .stage { fill: #fff; stroke: #1f2937; stroke-width: 1.5; }
+      .stage-index { fill: #f3f4f6; stroke: #6b7280; }
+      .stage-query { fill: #eef2ff; stroke: #4f46e5; }
+      .stage-fuse { fill: #ecfdf5; stroke: #059669; }
+      .stage-rerank { fill: #fff7ed; stroke: #ea580c; }
+      .stage-answer { fill: #fef2f2; stroke: #dc2626; }
+      .stage-store { fill: #f5f3ff; stroke: #7c3aed; }
+      .label { font-size: 13px; fill: #111827; font-weight: 600; }
+      .sublabel { font-size: 11px; fill: #4b5563; }
+      .phase-title { font-size: 15px; font-weight: 700; fill: #111827; }
+      .arrow { stroke: #4b5563; stroke-width: 1.5; fill: none; }
+      .meta { font-size: 11px; fill: #6b7280; font-style: italic; }
+    </style>
+  </defs>
+
+  <!-- Phase 1 header -->
+  <text x="20" y="30" class="phase-title">① Indexing  (one-time, per repo)</text>
+  <line x1="20" y1="38" x2="880" y2="38" stroke="#e5e7eb" stroke-width="1"/>
+
+  <!-- Indexing pipeline -->
+  <rect x="30"  y="60" width="140" height="64" rx="8" class="stage stage-index"/>
+  <text x="100" y="86" text-anchor="middle" class="label">Clone repo</text>
+  <text x="100" y="104" text-anchor="middle" class="sublabel">git, depth=1</text>
+
+  <rect x="200" y="60" width="140" height="64" rx="8" class="stage stage-index"/>
+  <text x="270" y="86" text-anchor="middle" class="label">AST chunker</text>
+  <text x="270" y="104" text-anchor="middle" class="sublabel">function / class / module</text>
+
+  <rect x="370" y="60" width="160" height="64" rx="8" class="stage stage-index"/>
+  <text x="450" y="86" text-anchor="middle" class="label">OpenAI embeddings</text>
+  <text x="450" y="104" text-anchor="middle" class="sublabel">text-embedding-3-small · 1536-d</text>
+
+  <rect x="560" y="50" width="140" height="40" rx="8" class="stage stage-store"/>
+  <text x="630" y="75" text-anchor="middle" class="label">ChromaDB</text>
+  <rect x="560" y="98" width="140" height="40" rx="8" class="stage stage-store"/>
+  <text x="630" y="123" text-anchor="middle" class="label">BM25 index</text>
+
+  <text x="730" y="80" class="meta">vector store</text>
+  <text x="730" y="125" class="meta">in-memory</text>
+
+  <line x1="170" y1="92" x2="200" y2="92" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="340" y1="92" x2="370" y2="92" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="530" y1="92" x2="555" y2="70"  class="arrow" marker-end="url(#arrow)"/>
+  <line x1="530" y1="92" x2="555" y2="118" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- Phase 2 header -->
+  <text x="20" y="180" class="phase-title">② Query  (per question)</text>
+  <line x1="20" y1="188" x2="880" y2="188" stroke="#e5e7eb" stroke-width="1"/>
+
+  <!-- User query -->
+  <rect x="30" y="210" width="140" height="64" rx="8" class="stage stage-query"/>
+  <text x="100" y="236" text-anchor="middle" class="label">User question</text>
+  <text x="100" y="254" text-anchor="middle" class="sublabel">natural language</text>
+
+  <!-- Two parallel retrieval branches -->
+  <rect x="220" y="170" width="160" height="64" rx="8" class="stage stage-query"/>
+  <text x="300" y="196" text-anchor="middle" class="label">Embed query</text>
+  <text x="300" y="214" text-anchor="middle" class="sublabel">→ Chroma cosine search</text>
+
+  <rect x="220" y="250" width="160" height="64" rx="8" class="stage stage-query"/>
+  <text x="300" y="276" text-anchor="middle" class="label">Tokenize query</text>
+  <text x="300" y="294" text-anchor="middle" class="sublabel">→ BM25 lookup</text>
+
+  <rect x="410" y="170" width="160" height="64" rx="8" class="stage"/>
+  <text x="490" y="196" text-anchor="middle" class="label">Top-2K dense</text>
+  <text x="490" y="214" text-anchor="middle" class="sublabel">semantic neighbours</text>
+
+  <rect x="410" y="250" width="160" height="64" rx="8" class="stage"/>
+  <text x="490" y="276" text-anchor="middle" class="label">Top-2K BM25</text>
+  <text x="490" y="294" text-anchor="middle" class="sublabel">keyword matches</text>
+
+  <line x1="170" y1="232" x2="220" y2="202" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="170" y1="252" x2="220" y2="282" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="380" y1="202" x2="410" y2="202" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="380" y1="282" x2="410" y2="282" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- RRF -->
+  <rect x="600" y="210" width="140" height="64" rx="8" class="stage stage-fuse"/>
+  <text x="670" y="236" text-anchor="middle" class="label">RRF fusion</text>
+  <text x="670" y="254" text-anchor="middle" class="sublabel">1 / (k + rank), k=60</text>
+
+  <line x1="570" y1="202" x2="600" y2="232" class="arrow" marker-end="url(#arrow)"/>
+  <line x1="570" y1="282" x2="600" y2="252" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- Rerank -->
+  <rect x="30" y="370" width="200" height="80" rx="8" class="stage stage-rerank"/>
+  <text x="130" y="397" text-anchor="middle" class="label">LLM reranker</text>
+  <text x="130" y="416" text-anchor="middle" class="sublabel">GPT-4o · score 0–10</text>
+  <text x="130" y="434" text-anchor="middle" class="sublabel">re-sort top-K candidates</text>
+
+  <line x1="670" y1="274" x2="670" y2="330" class="arrow"/>
+  <line x1="670" y1="330" x2="130" y2="330" class="arrow"/>
+  <line x1="130" y1="330" x2="130" y2="370" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- Answer generation -->
+  <rect x="290" y="370" width="200" height="80" rx="8" class="stage stage-answer"/>
+  <text x="390" y="397" text-anchor="middle" class="label">Answer generation</text>
+  <text x="390" y="416" text-anchor="middle" class="sublabel">GPT-4o · context = top-K chunks</text>
+  <text x="390" y="434" text-anchor="middle" class="sublabel">cite file + function</text>
+
+  <line x1="230" y1="410" x2="290" y2="410" class="arrow" marker-end="url(#arrow)"/>
+
+  <rect x="550" y="370" width="200" height="80" rx="8" class="stage stage-answer"/>
+  <text x="650" y="397" text-anchor="middle" class="label">Cited answer</text>
+  <text x="650" y="416" text-anchor="middle" class="sublabel">Markdown + source list</text>
+  <text x="650" y="434" text-anchor="middle" class="sublabel">e.g. fastapi/routing.py:get_request_handler</text>
+
+  <line x1="490" y1="410" x2="550" y2="410" class="arrow" marker-end="url(#arrow)"/>
+
+  <!-- Legend -->
+  <text x="20" y="500" class="phase-title">Notes</text>
+  <line x1="20" y1="508" x2="880" y2="508" stroke="#e5e7eb" stroke-width="1"/>
+  <text x="20" y="528" class="sublabel"><tspan font-weight="700">AST chunking</tspan> · functions, classes, methods stay intact — never split mid-function</text>
+  <text x="20" y="548" class="sublabel"><tspan font-weight="700">Hybrid + RRF</tspan> · semantic catches paraphrase; BM25 catches exact identifiers; RRF rewards items found by both</text>
+  <text x="20" y="568" class="sublabel"><tspan font-weight="700">LLM rerank</tspan> · cheap second pass that re-scores top-2K hybrid candidates by actual content (not rank)</text>
+  <text x="20" y="588" class="sublabel"><tspan font-weight="700">Two-phase by design</tspan> · first stage is fast and broad, second stage is slow and precise — same pattern as production search</text>
+</svg>
