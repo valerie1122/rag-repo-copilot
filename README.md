@@ -57,12 +57,18 @@ After RRF we have ~10 plausible candidates, but their relative order still refle
 
 ### Test set
 
+**Why FastAPI as the test repo.** Medium size makes labeling tractable; Python with consistent naming conventions provides a fair test for both keyword and semantic retrieval; it matches the project's own tech stack, making relevance judgments easier; widely-known APIs reduce labeling bias.
+
 40 hand-labeled queries against the FastAPI source (`tiangolo/fastapi`, ~46 files indexed → 395 AST chunks). Each query is annotated with 1–3 relevant chunk IDs of the form `{file_path}::{name}`. Queries are split 20/20 between **explicit** (mentions a specific identifier — favours BM25) and **fuzzy** (conceptual question, no exact-match terms — favours semantic). The full set lives in [`eval/queries_fastapi.json`](eval/queries_fastapi.json).
 
 ### Metrics
 
 - **Hit Rate@5** — fraction of queries where any relevant chunk appears in the top-5 results.
 - **MRR (Mean Reciprocal Rank)** — `1/rank` of the first relevant result, averaged over all queries (0 if not in top-5).
+
+### Ablation design: why 3 modes
+
+The three modes (A: dense-only → B: + BM25/RRF → C: + LLM rerank) are designed to **isolate the contribution of each component**. Mode A establishes a baseline; B measures whether keyword-based fusion adds signal on top of semantic retrieval; C measures the additional lift from neural reranking. This decomposition matters because RAG papers often report "hybrid + rerank" as a single improvement, hiding which component does the real work — and as the table below shows, the answer can be surprising.
 
 ### Results
 
